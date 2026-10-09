@@ -5,7 +5,10 @@ requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.143.0",
     "httpx>=0.28.1",
+    "pymupdf>=1.28.2",
     "pytest>=9.1.1",
+    "python-multipart>=0.0.32",
+    "python-pptx>=1.0.2",
     "uvicorn[standard]>=0.54.0",
 ]
 
