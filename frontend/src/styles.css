@@ -1,0 +1,111 @@
+:root {
+  font-family: "Segoe UI", sans-serif;
+  color: #eef2ed;
+  background: #111715;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-weight: 400;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(ellipse at 50% 0%, rgb(65 98 73 / 22%), transparent 52%),
+    #111715;
+}
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 20px;
+  text-align: center;
+}
+
+.brand-mark {
+  display: grid;
+  width: 52px;
+  aspect-ratio: 1;
+  place-items: center;
+  border: 1px solid #8baa82;
+  color: #c7dfb9;
+  font-family: Georgia, serif;
+  font-size: 27px;
+}
+
+.eyebrow {
+  margin: 28px 0 12px;
+  color: #a8bd9c;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+}
+
+h1 {
+  margin: 0;
+  font-family: Georgia, serif;
+  font-size: 42px;
+  font-weight: 400;
+}
+
+.intro {
+  margin: 14px 0 36px;
+  color: #b6c0b7;
+  font-size: 16px;
+}
+
+.service-status {
+  display: flex;
+  width: min(100%, 360px);
+  min-height: 58px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  border: 1px solid #35423a;
+  background: #19211c;
+  text-align: left;
+}
+
+.status-indicator {
+  width: 9px;
+  aspect-ratio: 1;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #d6ad62;
+}
+
+.status-online {
+  background: #86c78c;
+}
+
+.status-offline {
+  background: #df8179;
+}
+
+.service-name {
+  color: #eef2ed;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.status-label {
+  margin-left: auto;
+  color: #b6c0b7;
+  font-size: 13px;
+}
+
+@media (max-width: 480px) {
+  h1 {
+    font-size: 32px;
+  }
+}
