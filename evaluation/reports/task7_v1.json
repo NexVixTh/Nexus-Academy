@@ -1,0 +1,313 @@
+{
+  "checks": [
+    {
+      "expected": "1.0",
+      "name": "answerable_question_coverage",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "citation_record_accuracy",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "citation_location_accuracy",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "fixture_evidence_support",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "unanswerable_abstention",
+      "observed": 0.5,
+      "passed": false
+    },
+    {
+      "expected": "1.0",
+      "name": "quiz_source_references",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "quiz_answer_keys",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "0.0",
+      "name": "quiz_duplicates",
+      "observed": 0.0,
+      "passed": true
+    },
+    {
+      "expected": "0.0",
+      "name": "quiz_url_heading_options",
+      "observed": 0.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "quiz_quality_rules",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "insufficient_source_reported",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "weak_concept_mastery",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "strong_concept_mastery",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "weak_concept_prioritized",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "unseen_concept_selected",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "strong_concept_not_overprioritized",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "retry_not_double_counted",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "adaptive_exact_repeat_avoidance",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "learner_isolation",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "1.0",
+      "name": "document_isolation",
+      "observed": 1.0,
+      "passed": true
+    },
+    {
+      "expected": "0.0",
+      "name": "no_unsupported_answers",
+      "observed": 0.5,
+      "passed": false
+    }
+  ],
+  "dataset_version": "1.0.0",
+  "evaluation_mode": "offline_deterministic_synthetic_fixtures",
+  "learner_policy_details": {
+    "adaptive_question_count": 8,
+    "repeated_submission_http_status": 200,
+    "strong_concept": "supports",
+    "strong_mastery_estimate": 0.75,
+    "unseen_concept": "contain",
+    "weak_concept": "photosynthesis",
+    "weak_mastery_estimate": 0.4,
+    "weak_question_alternates_available": true
+  },
+  "limitations": [
+    "Evidence support is checked by manually specified fixture terms, not semantic entailment.",
+    "Citation correctness and answer support are measured separately.",
+    "Keyword overlap can produce unsupported answers for misleading queries; this is measured as a failure, not hidden.",
+    "Quiz checks validate deterministic template rules, not pedagogical quality or distractor usefulness.",
+    "Learner results are deterministic policy checks over synthetic histories, not evidence of real-world educational effectiveness.",
+    "No RAGAS, DeepEval, TruLens, LLM, embedding model, or external service is used."
+  ],
+  "metrics": {
+    "grounded_qa": {
+      "answerable_coverage": {
+        "denominator": 4,
+        "numerator": 4,
+        "value": 1.0
+      },
+      "appropriate_abstention_rate": {
+        "denominator": 2,
+        "numerator": 1,
+        "value": 0.5
+      },
+      "citation_correctness": {
+        "denominator": 4,
+        "numerator": 4,
+        "value": 1.0
+      },
+      "citation_location_accuracy": {
+        "denominator": 4,
+        "numerator": 4,
+        "value": 1.0
+      },
+      "citation_source_record_accuracy": {
+        "denominator": 4,
+        "numerator": 4,
+        "value": 1.0
+      },
+      "evidence_support_rate": {
+        "denominator": 4,
+        "numerator": 4,
+        "value": 1.0
+      },
+      "unsupported_answer_rate": {
+        "denominator": 2,
+        "numerator": 1,
+        "value": 0.5
+      }
+    },
+    "personalization": {
+      "adaptive_exact_repeat_avoidance": {
+        "denominator": 8,
+        "numerator": 8,
+        "value": 1.0
+      },
+      "document_isolation": {
+        "denominator": 5,
+        "numerator": 5,
+        "value": 1.0
+      },
+      "learner_isolation": {
+        "denominator": 1,
+        "numerator": 1,
+        "value": 1.0
+      },
+      "retry_not_double_counted": {
+        "denominator": 1,
+        "numerator": 1,
+        "value": 1.0
+      },
+      "strong_concept_mastery": {
+        "denominator": 1,
+        "numerator": 1,
+        "value": 1.0
+      },
+      "strong_concept_not_overprioritized": {
+        "denominator": 1,
+        "numerator": 1,
+        "value": 1.0
+      },
+      "unseen_concept_selected": {
+        "denominator": 1,
+        "numerator": 1,
+        "value": 1.0
+      },
+      "weak_concept_mastery": {
+        "denominator": 1,
+        "numerator": 1,
+        "value": 1.0
+      },
+      "weak_concept_prioritized": {
+        "denominator": 1,
+        "numerator": 1,
+        "value": 1.0
+      }
+    },
+    "quiz": {
+      "answer_key_consistency_rate": {
+        "denominator": 5,
+        "numerator": 5,
+        "value": 1.0
+      },
+      "blocked_candidate_rejection_rate": {
+        "denominator": 5,
+        "numerator": 5,
+        "value": 1.0
+      },
+      "duplicate_question_rate": {
+        "denominator": 5,
+        "numerator": 0,
+        "value": 0.0
+      },
+      "generated_questions_vs_requested": {
+        "denominator": 13,
+        "numerator": 5,
+        "value": 0.3846
+      },
+      "insufficient_content_report_rate": {
+        "denominator": 1,
+        "numerator": 1,
+        "value": 1.0
+      },
+      "quality_rule_satisfaction_rate": {
+        "denominator": 5,
+        "numerator": 5,
+        "value": 1.0
+      },
+      "url_or_heading_option_rate": {
+        "denominator": 20,
+        "numerator": 0,
+        "value": 0.0
+      },
+      "valid_source_reference_rate": {
+        "denominator": 5,
+        "numerator": 5,
+        "value": 1.0
+      }
+    }
+  },
+  "quiz_check_details": [
+    {
+      "check_id": "quality-filters",
+      "generated": 5,
+      "limitation_reported": true,
+      "requested": 8,
+      "status_code": 200
+    },
+    {
+      "check_id": "insufficient-source",
+      "generated": 0,
+      "limitation_reported": true,
+      "requested": 5,
+      "status_code": 200
+    }
+  ],
+  "report_version": "1.0.0",
+  "reproduction": [
+    "uv run --python 3.13 pytest",
+    "uv run --python 3.13 python -m evaluation.runner"
+  ],
+  "sample_counts": {
+    "answerable_qa_cases": 4,
+    "documents": 5,
+    "qa_cases": 6,
+    "quiz_checks": 2,
+    "simulated_learners": 2,
+    "source_records": 8,
+    "unanswerable_qa_cases": 2
+  },
+  "summary": {
+    "failed": 2,
+    "passed": 19,
+    "total": 21
+  }
+}

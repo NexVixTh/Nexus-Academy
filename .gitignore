@@ -18,6 +18,7 @@ dist/
 *.sqlite3
 uploads/
 backend/uploads/
+data/assets/
 
 # Model artifacts
 models/
