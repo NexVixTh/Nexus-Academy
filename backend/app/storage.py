@@ -5,7 +5,7 @@ import re
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, Protocol, Sequence
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -60,6 +60,15 @@ class QuizQuestionData(Protocol):
 class QuizAnswerData(Protocol):
     question_id: str
     selected_option_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class StoredDocumentSummary:
+    document_id: str
+    original_filename: str
+    content_type: str
+    ingested_at: str
+    record_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +127,45 @@ class LearnerProgress:
 class LearnerAdaptiveContext:
     concepts: tuple[LearnerConceptProgress, ...]
     attempted_question_ids: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class LearnerAchievement:
+    id: str
+    title: str
+    description: str
+    unlocked: bool
+    unlocked_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class LearnerDailyMission:
+    id: str
+    title: str
+    description: str
+    target: int
+    current: int
+    completed: bool
+    xp_reward: int
+
+
+@dataclass(frozen=True, slots=True)
+class LearnerGamification:
+    learner_id: str
+    xp: int
+    level: int
+    level_title: str
+    xp_for_current_level: int
+    xp_for_next_level: int
+    level_progress_percentage: float
+    current_streak_days: int
+    quiz_count: int
+    questions_answered: int
+    questions_correct: int
+    proficient_concepts_count: int
+    achievements: tuple[LearnerAchievement, ...]
+    daily_missions: tuple[LearnerDailyMission, ...]
+
 
 
 class QuizDocumentNotFoundError(LookupError):
@@ -224,6 +272,40 @@ def save_document(
                 )
 
     return document_id
+
+
+def list_documents(database_path: Path) -> list[StoredDocumentSummary]:
+    if not database_path.is_file():
+        return []
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        table_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'"
+        ).fetchone()
+        if table_exists is None:
+            return []
+
+        rows = connection.execute(
+            """
+            SELECT d.id, d.original_filename, d.content_type, d.ingested_at,
+                   COUNT(s.id) AS record_count
+            FROM documents d
+            LEFT JOIN source_records s ON s.document_id = d.id
+            GROUP BY d.id
+            ORDER BY d.ingested_at DESC
+            """
+        ).fetchall()
+        return [
+            StoredDocumentSummary(
+                document_id=row["id"],
+                original_filename=row["original_filename"],
+                content_type=row["content_type"],
+                ingested_at=row["ingested_at"],
+                record_count=row["record_count"],
+            )
+            for row in rows
+        ]
 
 
 def get_document_source_records(
@@ -659,6 +741,192 @@ def get_learner_progress(
             )
             for row in concept_rows
         ),
+    )
+
+
+def get_learner_gamification(
+    database_path: Path,
+    learner_id: str,
+) -> LearnerGamification | None:
+    if not database_path.is_file():
+        return None
+
+    with closing(sqlite3.connect(database_path)) as connection, connection:
+        _ensure_learner_tables(connection)
+        profile_row = connection.execute(
+            "SELECT id, created_at FROM learner_profiles WHERE id = ?",
+            (learner_id,),
+        ).fetchone()
+        if profile_row is None:
+            return None
+
+        quiz_attempts = connection.execute(
+            "SELECT answered_count, correct_count, created_at "
+            "FROM learner_quiz_attempts WHERE learner_id = ? "
+            "ORDER BY created_at ASC",
+            (learner_id,),
+        ).fetchall()
+
+        question_stats = connection.execute(
+            "SELECT COUNT(*), COALESCE(SUM(is_correct), 0) "
+            "FROM learner_question_attempts WHERE learner_id = ?",
+            (learner_id,),
+        ).fetchone()
+
+        concept_rows = connection.execute(
+            "SELECT concept_label, attempt_count, correct_count, mastery_estimate "
+            "FROM learner_concept_mastery WHERE learner_id = ?",
+            (learner_id,),
+        ).fetchall()
+
+    quiz_count = len(quiz_attempts)
+    questions_answered = question_stats[0] if question_stats else 0
+    questions_correct = question_stats[1] if question_stats else 0
+
+    proficient_concepts = sum(
+        1 for row in concept_rows if row[1] >= 2 and row[3] >= 0.70
+    )
+    perfect_quizzes = sum(
+        1 for row in quiz_attempts if row[0] >= 1 and row[0] == row[1]
+    )
+
+    xp = (quiz_count * 50) + (questions_correct * 20) + (proficient_concepts * 100) + (perfect_quizzes * 75)
+
+    LEVELS = (
+        (1, "Novice Scholar", 0, 150),
+        (2, "Knowledge Apprentice", 150, 400),
+        (3, "Concept Investigator", 400, 800),
+        (4, "Mastery Practitioner", 800, 1500),
+        (5, "Academic Luminary", 1500, 3000),
+    )
+
+    level = 1
+    level_title = "Novice Scholar"
+    cur_lvl_xp = 0
+    next_lvl_xp = 150
+
+    for lvl, title, min_xp, max_xp in LEVELS:
+        if xp >= min_xp:
+            level = lvl
+            level_title = title
+            cur_lvl_xp = min_xp
+            next_lvl_xp = max_xp
+
+    progress_pct = min(100.0, max(0.0, ((xp - cur_lvl_xp) / max(1, next_lvl_xp - cur_lvl_xp)) * 100.0))
+
+    dates: set[str] = set()
+    for row in quiz_attempts:
+        dt_str = row[2]
+        try:
+            d = dt_str.split("T")[0]
+            dates.add(d)
+        except Exception:
+            pass
+
+    today = datetime.now(timezone.utc).date()
+    streak = 0
+    yesterday = today - timedelta(days=1)
+    if str(today) in dates or str(yesterday) in dates:
+        curr = today if str(today) in dates else yesterday
+        while str(curr) in dates:
+            streak += 1
+            curr = curr - timedelta(days=1)
+
+    today_str = str(today)
+    quizzes_today = sum(1 for row in quiz_attempts if row[2].startswith(today_str))
+    questions_today = sum(row[0] for row in quiz_attempts if row[2].startswith(today_str))
+    correct_today = sum(row[1] for row in quiz_attempts if row[2].startswith(today_str))
+
+    achievements = (
+        LearnerAchievement(
+            id="first_quiz",
+            title="First Spark",
+            description="Completed your first quiz session.",
+            unlocked=quiz_count >= 1,
+            unlocked_at=quiz_attempts[0][2] if quiz_count >= 1 else None,
+        ),
+        LearnerAchievement(
+            id="perfect_score",
+            title="Precision Mind",
+            description="Achieved 100% accuracy on a quiz session.",
+            unlocked=perfect_quizzes >= 1,
+            unlocked_at=next((r[2] for r in quiz_attempts if r[0] >= 1 and r[0] == r[1]), None),
+        ),
+        LearnerAchievement(
+            id="first_proficient",
+            title="Mastery Pioneer",
+            description="Attained Proficient status on at least one concept.",
+            unlocked=proficient_concepts >= 1,
+            unlocked_at=profile_row[1] if proficient_concepts >= 1 else None,
+        ),
+        LearnerAchievement(
+            id="multiconcept_explorer",
+            title="Knowledge Explorer",
+            description="Explored and tested 3 or more distinct concepts.",
+            unlocked=len(concept_rows) >= 3,
+            unlocked_at=profile_row[1] if len(concept_rows) >= 3 else None,
+        ),
+        LearnerAchievement(
+            id="mastery_champion",
+            title="Curriculum Conqueror",
+            description="Demonstrated proficiency in 3 or more concepts.",
+            unlocked=proficient_concepts >= 3,
+            unlocked_at=profile_row[1] if proficient_concepts >= 3 else None,
+        ),
+        LearnerAchievement(
+            id="persistent_scholar",
+            title="Persistent Scholar",
+            description="Submitted 3 or more quiz sessions.",
+            unlocked=quiz_count >= 3,
+            unlocked_at=quiz_attempts[2][2] if quiz_count >= 3 else None,
+        ),
+    )
+
+    daily_missions = (
+        LearnerDailyMission(
+            id="daily_quiz",
+            title="Daily Practice Assessment",
+            description="Complete at least 1 quiz session today.",
+            target=1,
+            current=min(1, quizzes_today),
+            completed=quizzes_today >= 1,
+            xp_reward=50,
+        ),
+        LearnerDailyMission(
+            id="concept_questions",
+            title="Evidence Challenge",
+            description="Answer 3 practice questions today.",
+            target=3,
+            current=min(3, questions_today),
+            completed=questions_today >= 3,
+            xp_reward=60,
+        ),
+        LearnerDailyMission(
+            id="accurate_recall",
+            title="Precision Drill",
+            description="Score at least 2 correct answers today.",
+            target=2,
+            current=min(2, correct_today),
+            completed=correct_today >= 2,
+            xp_reward=40,
+        ),
+    )
+
+    return LearnerGamification(
+        learner_id=learner_id,
+        xp=xp,
+        level=level,
+        level_title=level_title,
+        xp_for_current_level=cur_lvl_xp,
+        xp_for_next_level=next_lvl_xp,
+        level_progress_percentage=round(progress_pct, 1),
+        current_streak_days=streak,
+        quiz_count=quiz_count,
+        questions_answered=questions_answered,
+        questions_correct=questions_correct,
+        proficient_concepts_count=proficient_concepts,
+        achievements=achievements,
+        daily_missions=daily_missions,
     )
 
 

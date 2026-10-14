@@ -718,4 +718,56 @@ async def test_document_progress_404_for_unknown_learner_or_document(
         unknown_d = await client.get(f"/learners/{learner_id}/documents/nonexistent-doc/progress")
         assert unknown_d.status_code == 404
         assert "Document not found" in unknown_d.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_learner_gamification_progress_and_achievements(
+    database_path: Path,
+) -> None:
+    doc_id = save_test_document(
+        database_path, [("page", 1, " ".join(REVIEW_STATEMENTS))]
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        learner = await create_learner(client)
+        learner_id = learner["learner_id"]
+
+        # Initial baseline state
+        initial_g = await client.get(f"/learners/{learner_id}/gamification")
+        assert initial_g.status_code == 200
+        g_data = initial_g.json()
+        assert g_data["learner_id"] == learner_id
+        assert g_data["xp"] == 0
+        assert g_data["level"] == 1
+        assert g_data["level_title"] == "Novice Scholar"
+        assert g_data["quiz_count"] == 0
+        assert all(not a["unlocked"] for a in g_data["achievements"])
+
+        # Take and submit a quiz with correct answers
+        quiz = await make_quiz(client, doc_id, learner_id, count=1)
+        q = quiz["questions"][0]
+        await submit_answers(
+            client,
+            doc_id,
+            learner_id,
+            quiz,
+            [{"question_id": q["question_id"], "selected_option_id": q["answer_key"]}],
+        )
+
+        # Gamification post-quiz
+        post_g = await client.get(f"/learners/{learner_id}/gamification")
+        assert post_g.status_code == 200
+        post_data = post_g.json()
+        assert post_data["quiz_count"] == 1
+        assert post_data["questions_answered"] == 1
+        assert post_data["questions_correct"] == 1
+        assert post_data["xp"] > 0
+        assert post_data["current_streak_days"] >= 1
+
+        # Check First Spark achievement is unlocked
+        first_spark = next(a for a in post_data["achievements"] if a["id"] == "first_quiz")
+        assert first_spark["unlocked"] is True
+        assert first_spark["unlocked_at"] is not None
+
 

@@ -49,8 +49,10 @@ from app.storage import (
     get_document_assets,
     get_document_source_records,
     get_learner_adaptive_context,
+    get_learner_gamification,
     get_learner_progress,
     get_quiz_session,
+    list_documents,
     record_learner_quiz_attempt,
     save_document,
     save_quiz_session,
@@ -72,6 +74,19 @@ class IngestionResponse(BaseModel):
     document_id: str
     pages_or_slides_processed: int
     records_created: int
+
+
+class DocumentListItemResponse(BaseModel):
+    document_id: str
+    original_filename: str
+    content_type: str
+    ingested_at: str
+    record_count: int
+
+
+class DocumentListResponse(BaseModel):
+    documents: list[DocumentListItemResponse]
+
 
 
 class DocumentAssetResponse(BaseModel):
@@ -262,6 +277,41 @@ class LearnerProgressResponse(BaseModel):
     insufficient_evidence_concepts: list[LearnerConceptProgressResponse]
 
 
+class LearnerAchievementResponse(BaseModel):
+    id: str
+    title: str
+    description: str
+    unlocked: bool
+    unlocked_at: str | None
+
+
+class LearnerDailyMissionResponse(BaseModel):
+    id: str
+    title: str
+    description: str
+    target: int
+    current: int
+    completed: bool
+    xp_reward: int
+
+
+class LearnerGamificationResponse(BaseModel):
+    learner_id: str
+    xp: int
+    level: int
+    level_title: str
+    xp_for_current_level: int
+    xp_for_next_level: int
+    level_progress_percentage: float
+    current_streak_days: int
+    quiz_count: int
+    questions_answered: int
+    questions_correct: int
+    proficient_concepts_count: int
+    achievements: list[LearnerAchievementResponse]
+    daily_missions: list[LearnerDailyMissionResponse]
+
+
 class LearnerDocumentConceptItemResponse(BaseModel):
     concept_id: str
     concept_label: str
@@ -399,6 +449,26 @@ async def upload_document(
             )
     finally:
         await file.close()
+
+
+@router.get("/documents", response_model=DocumentListResponse)
+def list_documents_endpoint() -> DocumentListResponse:
+    try:
+        docs = list_documents(get_database_path())
+        return DocumentListResponse(
+            documents=[
+                DocumentListItemResponse(
+                    document_id=doc.document_id,
+                    original_filename=doc.original_filename,
+                    content_type=doc.content_type,
+                    ingested_at=doc.ingested_at,
+                    record_count=doc.record_count,
+                )
+                for doc in docs
+            ]
+        )
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail="Database storage is unavailable.") from exc
 
 
 @router.get("/documents/{document_id}/assets", response_model=DocumentAssetsResponse)
@@ -735,6 +805,56 @@ def get_learner_progress_endpoint(learner_id: str) -> LearnerProgressResponse:
         weak_concepts=[concept for concept in concepts if concept.mastery_estimate < 0.5],
         insufficient_evidence_concepts=[
             concept for concept in concepts if not concept.evidence_sufficient
+        ],
+    )
+
+
+@router.get(
+    "/learners/{learner_id}/gamification",
+    response_model=LearnerGamificationResponse,
+)
+def get_learner_gamification_endpoint(learner_id: str) -> LearnerGamificationResponse:
+    try:
+        gamification = get_learner_gamification(get_database_path(), learner_id)
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail="Learner storage is unavailable.") from exc
+    if gamification is None:
+        raise HTTPException(status_code=404, detail="Learner not found.")
+
+    return LearnerGamificationResponse(
+        learner_id=gamification.learner_id,
+        xp=gamification.xp,
+        level=gamification.level,
+        level_title=gamification.level_title,
+        xp_for_current_level=gamification.xp_for_current_level,
+        xp_for_next_level=gamification.xp_for_next_level,
+        level_progress_percentage=gamification.level_progress_percentage,
+        current_streak_days=gamification.current_streak_days,
+        quiz_count=gamification.quiz_count,
+        questions_answered=gamification.questions_answered,
+        questions_correct=gamification.questions_correct,
+        proficient_concepts_count=gamification.proficient_concepts_count,
+        achievements=[
+            LearnerAchievementResponse(
+                id=a.id,
+                title=a.title,
+                description=a.description,
+                unlocked=a.unlocked,
+                unlocked_at=a.unlocked_at,
+            )
+            for a in gamification.achievements
+        ],
+        daily_missions=[
+            LearnerDailyMissionResponse(
+                id=m.id,
+                title=m.title,
+                description=m.description,
+                target=m.target,
+                current=m.current,
+                completed=m.completed,
+                xp_reward=m.xp_reward,
+            )
+            for m in gamification.daily_missions
         ],
     )
 
