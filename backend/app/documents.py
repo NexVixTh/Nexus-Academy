@@ -1,5 +1,6 @@
 import sqlite3
 import tempfile
+from contextlib import closing
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import uuid4
@@ -17,6 +18,11 @@ from app.ingestion import (
     InvalidDocumentError,
     UnsupportedDocumentError,
     extract_document,
+)
+from app.concepts import (
+    LearningStatus,
+    evaluate_concept_learning_status,
+    extract_document_concepts,
 )
 from app.model_routing import ModelRouter
 from app.retrieval import DocumentNotFoundError, normalize_query, search_document
@@ -39,13 +45,16 @@ from app.storage import (
     create_learner_profile,
     get_database_path,
     get_document_asset,
+    get_document_asset_bytes,
     get_document_assets,
+    get_document_source_records,
     get_learner_adaptive_context,
     get_learner_progress,
     get_quiz_session,
     record_learner_quiz_attempt,
     save_document,
     save_quiz_session,
+    attach_visual_description_to_source_record,
 )
 
 
@@ -78,6 +87,14 @@ class DocumentAssetResponse(BaseModel):
 class DocumentAssetsResponse(BaseModel):
     document_id: str
     assets: list[DocumentAssetResponse]
+
+
+class DescribeAssetResponse(BaseModel):
+    document_id: str
+    asset_id: str
+    slide_number: int
+    visual_description: str | None
+    status: Literal["described", "vision_disabled", "vision_unavailable"]
 
 
 class SearchResultResponse(BaseModel):
@@ -228,6 +245,10 @@ class LearnerConceptProgressResponse(BaseModel):
     mastery_estimate: float
     recent_accuracy: float | None
     evidence_sufficient: bool
+    incorrect_count: int = 0
+    learning_status: LearningStatus = "learning"
+    explanation: str | None = None
+    recommended_action: str | None = None
 
 
 class LearnerProgressResponse(BaseModel):
@@ -239,6 +260,66 @@ class LearnerProgressResponse(BaseModel):
     concepts_attempted: list[LearnerConceptProgressResponse]
     weak_concepts: list[LearnerConceptProgressResponse]
     insufficient_evidence_concepts: list[LearnerConceptProgressResponse]
+
+
+class LearnerDocumentConceptItemResponse(BaseModel):
+    concept_id: str
+    concept_label: str
+    mastery_estimate: float | None
+    attempt_count: int
+    correct_count: int
+    incorrect_count: int
+    recent_accuracy: float | None
+    evidence_sufficient: bool
+    learning_status: LearningStatus
+    explanation: str
+    recommended_action: str
+    source_record_id: str
+    source_type: Literal["pdf_page", "pptx_slide"]
+    page_or_slide_number: int
+    evidence_excerpt: str
+    is_visual: bool
+    related_concept_names: list[str]
+
+
+class LearnerDocumentSummaryResponse(BaseModel):
+    total_document_concepts: int
+    attempted_concept_count: int
+    proficient_concept_count: int
+    struggling_concept_count: int
+    learning_concept_count: int
+    not_attempted_concept_count: int
+    overall_mastery_estimate: float | None
+
+
+class LearnerDocumentProgressResponse(BaseModel):
+    learner_id: str
+    document_id: str
+    quiz_attempt_count: int
+    question_attempt_count: int
+    correct_question_count: int
+    correct_answer_rate: float
+    summary: LearnerDocumentSummaryResponse
+    concepts: list[LearnerDocumentConceptItemResponse]
+
+
+class DocumentConceptItemResponse(BaseModel):
+    concept_id: str
+    document_id: str
+    name: str
+    description: str
+    source_record_id: str
+    source_type: Literal["pdf_page", "pptx_slide"]
+    page_or_slide_number: int
+    evidence_excerpt: str
+    is_visual: bool
+    related_concept_names: list[str]
+
+
+class DocumentConceptsResponse(BaseModel):
+    document_id: str
+    concept_count: int
+    concepts: list[DocumentConceptItemResponse]
 
 
 class ModelTaskStatusResponse(BaseModel):
@@ -373,6 +454,124 @@ def get_document_asset_endpoint(
     )
 
 
+@router.post(
+    "/documents/{document_id}/assets/{asset_id}/describe",
+    response_model=DescribeAssetResponse,
+)
+def describe_document_asset_endpoint(
+    document_id: str,
+    asset_id: Annotated[
+        str,
+        PathParameter(pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"),
+    ],
+) -> DescribeAssetResponse:
+    database_path = get_database_path()
+    try:
+        asset = get_document_asset(database_path, document_id, asset_id)
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail="Asset storage is unavailable.") from exc
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Document asset not found.")
+
+    asset_data = get_document_asset_bytes(database_path, document_id, asset_id)
+    if asset_data is None:
+        raise HTTPException(status_code=404, detail="Document asset file is missing or corrupt.")
+
+    raw_bytes, mime_type = asset_data
+
+    # Check if vision task is enabled
+    vision_config = MODEL_ROUTER.configs.get("vision")
+    if not vision_config or not vision_config.enabled or vision_config.provider == "disabled":
+        return DescribeAssetResponse(
+            document_id=document_id,
+            asset_id=asset_id,
+            slide_number=asset.slide_number,
+            visual_description=None,
+            status="vision_disabled",
+        )
+
+    try:
+        model_result = MODEL_ROUTER.describe_image(
+            "vision",
+            prompt=(
+                "Describe the visual learning content, diagram, chart, or concept illustrated "
+                "in this slide image concisely for educational tutoring evidence."
+            ),
+            image_data=raw_bytes,
+            mime_type=mime_type,
+        )
+        description = model_result.text.strip()
+        if not description:
+            return DescribeAssetResponse(
+                document_id=document_id,
+                asset_id=asset_id,
+                slide_number=asset.slide_number,
+                visual_description=None,
+                status="vision_unavailable",
+            )
+
+        # Attach to matching slide source record in SQLite
+        attached = attach_visual_description_to_source_record(
+            database_path,
+            document_id,
+            asset.slide_number,
+            description,
+        )
+        if not attached:
+            raise HTTPException(status_code=500, detail="Failed to link visual description to slide record.")
+
+        return DescribeAssetResponse(
+            document_id=document_id,
+            asset_id=asset_id,
+            slide_number=asset.slide_number,
+            visual_description=description,
+            status="described",
+        )
+    except Exception:
+        # Gracefully handle model timeout, network, or provider failure
+        return DescribeAssetResponse(
+            document_id=document_id,
+            asset_id=asset_id,
+            slide_number=asset.slide_number,
+            visual_description=None,
+            status="vision_unavailable",
+        )
+
+
+@router.get("/documents/{document_id}/concepts", response_model=DocumentConceptsResponse)
+def get_document_concepts_endpoint(document_id: str) -> DocumentConceptsResponse:
+    database_path = get_database_path()
+    try:
+        records = get_document_source_records(database_path, document_id)
+        if records is None:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        extracted = extract_document_concepts(database_path, document_id)
+    except HTTPException:
+        raise
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail="Concept storage is unavailable.") from exc
+
+    return DocumentConceptsResponse(
+        document_id=document_id,
+        concept_count=len(extracted),
+        concepts=[
+            DocumentConceptItemResponse(
+                concept_id=c.concept_id,
+                document_id=c.document_id,
+                name=c.name,
+                description=c.description,
+                source_record_id=c.source_record_id,
+                source_type=c.source_type,
+                page_or_slide_number=c.page_or_slide_number,
+                evidence_excerpt=c.evidence_excerpt,
+                is_visual=c.is_visual,
+                related_concept_names=list(c.related_concept_names),
+            )
+            for c in extracted
+        ],
+    )
+
+
 @router.get("/documents/{document_id}/search", response_model=DocumentSearchResponse)
 def search_document_endpoint(
     document_id: str,
@@ -423,63 +622,6 @@ def get_model_status_endpoint() -> ModelStatusResponse:
             )
             for status in MODEL_ROUTER.status()
         ]
-    )
-
-
-@router.post("/learners", response_model=LearnerProfileResponse, status_code=201)
-def create_learner_endpoint() -> LearnerProfileResponse:
-    try:
-        profile = create_learner_profile(get_database_path())
-    except sqlite3.Error as exc:
-        raise HTTPException(status_code=500, detail="Learner storage is unavailable.") from exc
-    return LearnerProfileResponse(
-        learner_id=profile.learner_id,
-        created_at=profile.created_at,
-    )
-
-
-@router.get("/learners/{learner_id}/progress", response_model=LearnerProgressResponse)
-def get_learner_progress_endpoint(learner_id: str) -> LearnerProgressResponse:
-    try:
-        progress = get_learner_progress(get_database_path(), learner_id)
-    except sqlite3.Error as exc:
-        raise HTTPException(status_code=500, detail="Learner storage is unavailable.") from exc
-    if progress is None:
-        raise HTTPException(status_code=404, detail="Learner not found.")
-
-    concepts = [
-        LearnerConceptProgressResponse(
-            document_id=concept.document_id,
-            concept_label=concept.concept_label,
-            label_basis="source_term_from_quiz_prompt",
-            question_attempt_count=concept.attempt_count,
-            correct_count=concept.correct_count,
-            mastery_estimate=concept.mastery_estimate,
-            recent_accuracy=(
-                sum(concept.recent_performance) / len(concept.recent_performance)
-                if concept.recent_performance
-                else None
-            ),
-            evidence_sufficient=concept.attempt_count >= 2,
-        )
-        for concept in progress.concepts
-    ]
-    correct_answer_rate = (
-        progress.correct_question_count / progress.question_attempt_count
-        if progress.question_attempt_count
-        else 0.0
-    )
-    return LearnerProgressResponse(
-        learner_id=progress.profile.learner_id,
-        created_at=progress.profile.created_at,
-        quiz_attempt_count=progress.quiz_attempt_count,
-        question_attempt_count=progress.question_attempt_count,
-        correct_answer_rate=correct_answer_rate,
-        concepts_attempted=concepts,
-        weak_concepts=[concept for concept in concepts if concept.mastery_estimate < 0.5],
-        insufficient_evidence_concepts=[
-            concept for concept in concepts if not concept.evidence_sufficient
-        ],
     )
 
 
@@ -550,23 +692,34 @@ def get_learner_progress_endpoint(learner_id: str) -> LearnerProgressResponse:
     if progress is None:
         raise HTTPException(status_code=404, detail="Learner not found.")
 
-    concepts = [
-        LearnerConceptProgressResponse(
-            document_id=concept.document_id,
-            concept_label=concept.concept_label,
-            label_basis="source_term_from_quiz_prompt",
-            question_attempt_count=concept.attempt_count,
+    concepts: list[LearnerConceptProgressResponse] = []
+    for concept in progress.concepts:
+        status, explanation, action = evaluate_concept_learning_status(
+            attempt_count=concept.attempt_count,
             correct_count=concept.correct_count,
             mastery_estimate=concept.mastery_estimate,
-            recent_accuracy=(
-                sum(concept.recent_performance) / len(concept.recent_performance)
-                if concept.recent_performance
-                else None
-            ),
-            evidence_sufficient=concept.attempt_count >= 2,
+            recent_performance=concept.recent_performance,
         )
-        for concept in progress.concepts
-    ]
+        concepts.append(
+            LearnerConceptProgressResponse(
+                document_id=concept.document_id,
+                concept_label=concept.concept_label,
+                label_basis="source_term_from_quiz_prompt",
+                question_attempt_count=concept.attempt_count,
+                correct_count=concept.correct_count,
+                mastery_estimate=concept.mastery_estimate,
+                recent_accuracy=(
+                    sum(concept.recent_performance) / len(concept.recent_performance)
+                    if concept.recent_performance
+                    else None
+                ),
+                evidence_sufficient=concept.attempt_count >= 2,
+                incorrect_count=concept.attempt_count - concept.correct_count,
+                learning_status=status,
+                explanation=explanation,
+                recommended_action=action,
+            )
+        )
     correct_answer_rate = (
         progress.correct_question_count / progress.question_attempt_count
         if progress.question_attempt_count
@@ -586,108 +739,145 @@ def get_learner_progress_endpoint(learner_id: str) -> LearnerProgressResponse:
     )
 
 
-@router.post(
-    "/learners/{learner_id}/documents/{document_id}/quiz",
-    response_model=QuizResponse,
+@router.get(
+    "/learners/{learner_id}/documents/{document_id}/progress",
+    response_model=LearnerDocumentProgressResponse,
 )
-def generate_adaptive_quiz_endpoint(
+def get_learner_document_progress_endpoint(
     learner_id: str,
     document_id: str,
-    request: AdaptiveQuizRequest,
-) -> QuizResponse:
+) -> LearnerDocumentProgressResponse:
     database_path = get_database_path()
     try:
+        if not database_path.is_file():
+            raise HTTPException(status_code=404, detail="Learner not found.")
+        with closing(sqlite3.connect(database_path)) as connection:
+            if connection.execute(
+                "SELECT 1 FROM learner_profiles WHERE id = ?", (learner_id,)
+            ).fetchone() is None:
+                raise HTTPException(status_code=404, detail="Learner not found.")
+            if connection.execute(
+                "SELECT 1 FROM documents WHERE id = ?", (document_id,)
+            ).fetchone() is None:
+                raise HTTPException(status_code=404, detail="Document not found.")
+
+            quiz_count_row = connection.execute(
+                "SELECT COUNT(*) FROM learner_quiz_attempts WHERE learner_id = ? AND document_id = ?",
+                (learner_id, document_id),
+            ).fetchone()
+            quiz_attempt_count = quiz_count_row[0] if quiz_count_row else 0
+
+            question_stats_row = connection.execute(
+                "SELECT COUNT(*), COALESCE(SUM(is_correct), 0) "
+                "FROM learner_question_attempts WHERE learner_id = ? AND document_id = ?",
+                (learner_id, document_id),
+            ).fetchone()
+            question_attempt_count = question_stats_row[0] if question_stats_row else 0
+            correct_question_count = question_stats_row[1] if question_stats_row else 0
+
         context = get_learner_adaptive_context(database_path, learner_id, document_id)
-        priorities: dict[str, tuple[int, float]] = {}
-        difficulty_preferences: dict[str, Literal["introductory", "standard"]] = {}
-        for concept in context.concepts:
-            recent_consistent = (
-                len(concept.recent_performance) >= 2
-                and all(concept.recent_performance[-2:])
-            )
-            if concept.mastery_estimate < 0.5 or (
-                concept.recent_performance and not concept.recent_performance[-1]
-            ):
-                priority = 0
-            elif concept.attempt_count < 2 or not recent_consistent:
-                priority = 1
+        mastery_by_concept = {c.concept_label: c for c in context.concepts}
+        doc_concepts = extract_document_concepts(database_path, document_id)
+
+        concept_items: list[LearnerDocumentConceptItemResponse] = []
+        for c in doc_concepts:
+            c_label = c.name.casefold()
+            prog = mastery_by_concept.get(c_label)
+            if prog is not None:
+                attempt_count = prog.attempt_count
+                correct_count = prog.correct_count
+                mastery_estimate = prog.mastery_estimate
+                recent_perf = prog.recent_performance
+                recent_accuracy = (
+                    sum(recent_perf) / len(recent_perf) if recent_perf else None
+                )
+                evidence_sufficient = attempt_count >= 2
             else:
-                priority = 2
-            priorities[concept.concept_label] = (priority, concept.mastery_estimate)
-            difficulty_preferences[concept.concept_label] = (
-                "standard"
-                if concept.attempt_count >= 3
-                and recent_consistent
-                and concept.mastery_estimate >= 0.75
-                else "introductory"
+                attempt_count = 0
+                correct_count = 0
+                mastery_estimate = None
+                recent_perf = ()
+                recent_accuracy = None
+                evidence_sufficient = False
+
+            incorrect_count = attempt_count - correct_count
+            status, explanation, action = evaluate_concept_learning_status(
+                attempt_count=attempt_count,
+                correct_count=correct_count,
+                mastery_estimate=mastery_estimate,
+                recent_performance=recent_perf,
+                source_type_label=c.source_type,
+                page_or_slide_number=c.page_or_slide_number,
+            )
+            concept_items.append(
+                LearnerDocumentConceptItemResponse(
+                    concept_id=c.concept_id,
+                    concept_label=c.name,
+                    mastery_estimate=mastery_estimate,
+                    attempt_count=attempt_count,
+                    correct_count=correct_count,
+                    incorrect_count=incorrect_count,
+                    recent_accuracy=recent_accuracy,
+                    evidence_sufficient=evidence_sufficient,
+                    learning_status=status,
+                    explanation=explanation,
+                    recommended_action=action,
+                    source_record_id=c.source_record_id,
+                    source_type=c.source_type,
+                    page_or_slide_number=c.page_or_slide_number,
+                    evidence_excerpt=c.evidence_excerpt,
+                    is_visual=c.is_visual,
+                    related_concept_names=list(c.related_concept_names),
+                )
             )
 
-        questions = generate_quiz(
-            database_path,
-            document_id,
-            question_count=10,
-            concept_priorities=priorities,
-            difficulty_preferences=difficulty_preferences,
-            excluded_question_ids=set(context.attempted_question_ids),
-        )[: request.question_count]
-        quiz_id = save_quiz_session(
-            database_path,
-            document_id,
-            questions,
+        attempted_items = [ci for ci in concept_items if ci.attempt_count > 0]
+        proficient_count = sum(1 for ci in concept_items if ci.learning_status == "proficient")
+        struggling_count = sum(1 for ci in concept_items if ci.learning_status == "struggling")
+        learning_count = sum(1 for ci in concept_items if ci.learning_status == "learning")
+        not_attempted_count = sum(1 for ci in concept_items if ci.learning_status == "not_attempted")
+
+        overall_mastery = (
+            round(
+                sum(ci.mastery_estimate for ci in attempted_items if ci.mastery_estimate is not None)
+                / len(attempted_items),
+                4,
+            )
+            if attempted_items
+            else None
+        )
+
+        summary = LearnerDocumentSummaryResponse(
+            total_document_concepts=len(doc_concepts),
+            attempted_concept_count=len(attempted_items),
+            proficient_concept_count=proficient_count,
+            struggling_concept_count=struggling_count,
+            learning_concept_count=learning_count,
+            not_attempted_concept_count=not_attempted_count,
+            overall_mastery_estimate=overall_mastery,
+        )
+
+        correct_rate = (
+            correct_question_count / question_attempt_count
+            if question_attempt_count > 0
+            else 0.0
+        )
+
+        return LearnerDocumentProgressResponse(
             learner_id=learner_id,
+            document_id=document_id,
+            quiz_attempt_count=quiz_attempt_count,
+            question_attempt_count=question_attempt_count,
+            correct_question_count=correct_question_count,
+            correct_answer_rate=correct_rate,
+            summary=summary,
+            concepts=concept_items,
         )
-    except LearnerNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Learner not found.") from exc
-    except LearnerDocumentNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Document not found.") from exc
-    except StoredQuizDocumentNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Document not found.") from exc
-    except QuizValidationError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail="Generated quiz failed source validation.",
-        ) from exc
-    except QuizSourceIntegrityError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail="Generated quiz failed source validation.",
-        ) from exc
+    except HTTPException:
+        raise
     except sqlite3.Error as exc:
-        raise HTTPException(status_code=500, detail="Quiz storage is unavailable.") from exc
+        raise HTTPException(status_code=500, detail="Learner storage is unavailable.") from exc
 
-    generated_count = len(questions)
-    limitation = None
-    if generated_count < request.question_count:
-        limitation = (
-            "Only non-repeated questions with four distinct source-backed statements "
-            "were included; the document may not support more suitable questions."
-        )
-    return QuizResponse(
-        quiz_id=quiz_id,
-        document_id=document_id,
-        learner_id=learner_id,
-        requested_question_count=request.question_count,
-        generated_question_count=generated_count,
-        limitation=limitation,
-        questions=[
-            QuizQuestionResponse(
-                question_id=question.question_id,
-                question_text=question.question_text,
-                concept_label=question.concept_label,
-                difficulty=question.difficulty,
-                options=[
-                    QuizOptionResponse(option_id=option.option_id, text=option.text)
-                    for option in question.options
-                ],
-                answer_key=question.answer_key,
-                source_record_id=question.source_record_id,
-                source_type=question.source_type,
-                page_or_slide_number=question.page_or_slide_number,
-                supporting_excerpt=question.supporting_excerpt,
-            )
-            for question in questions
-        ],
-    )
 
 
 @router.post(

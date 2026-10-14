@@ -60,6 +60,10 @@ class ModelCapabilityError(ModelRoutingError):
     pass
 
 
+class ModelInvalidRequestError(ModelRoutingError):
+    """Raised when the provider rejects the request as invalid (e.g. invalid or decommissioned model)."""
+
+
 class ModelUnavailableError(ModelRoutingError):
     pass
 
@@ -209,6 +213,30 @@ class HttpProviderAdapter:
         if response.status_code >= 500:
             raise ModelUnavailableError("Configured model provider is unavailable.")
         if response.is_error:
+            # For 400 or 404, check if the error is due to an invalid/deprecated model ID
+            if response.status_code in (400, 404):
+                try:
+                    error_data = response.json().get("error", {})
+                    if isinstance(error_data, dict):
+                        err_code = str(error_data.get("code", "")).lower()
+                        err_type = str(error_data.get("type", "")).lower()
+                        err_msg = str(error_data.get("message", "")).lower()
+                        if (
+                            "decommission" in err_code
+                            or "decommission" in err_msg
+                            or "not_found" in err_code
+                            or "model_not_found" in err_type
+                            or "does not exist" in err_msg
+                            or "unknown model" in err_msg
+                            or "unsupported model" in err_msg
+                            or "invalid_model" in err_code
+                            or "invalid_model" in err_type
+                        ):
+                            raise ModelInvalidRequestError(
+                                "Configured model ID is invalid, decommissioned, or not supported by the provider."
+                            )
+                except ValueError:
+                    pass
             raise ModelUnavailableError(
                 f"Configured model provider rejected the request (HTTP {response.status_code})."
             )
@@ -732,6 +760,8 @@ def safe_diagnostic_text(error: Exception) -> str:
         return "Configured model lacks the capability required for this task."
     if isinstance(error, ModelOutputError):
         return "Configured provider returned unusable output."
+    if isinstance(error, ModelInvalidRequestError):
+        return "Configured model ID is invalid, decommissioned, or not supported by the provider."
     if isinstance(error, ModelDisabledError):
         return "Model task is disabled."
     return "Configured provider is unavailable."

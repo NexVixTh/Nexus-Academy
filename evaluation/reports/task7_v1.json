@@ -27,8 +27,8 @@
     {
       "expected": "1.0",
       "name": "unanswerable_abstention",
-      "observed": 0.5,
-      "passed": false
+      "observed": 1.0,
+      "passed": true
     },
     {
       "expected": "1.0",
@@ -123,18 +123,18 @@
     {
       "expected": "0.0",
       "name": "no_unsupported_answers",
-      "observed": 0.5,
-      "passed": false
+      "observed": 0.0,
+      "passed": true
     }
   ],
-  "dataset_version": "1.0.0",
+  "dataset_version": "1.1.0",
   "evaluation_mode": "offline_deterministic_synthetic_fixtures",
   "learner_policy_details": {
     "adaptive_question_count": 8,
     "repeated_submission_http_status": 200,
-    "strong_concept": "supports",
+    "strong_concept": "water",
     "strong_mastery_estimate": 0.75,
-    "unseen_concept": "contain",
+    "unseen_concept": "green",
     "weak_concept": "photosynthesis",
     "weak_mastery_estimate": 0.4,
     "weak_question_alternates_available": true
@@ -150,39 +150,39 @@
   "metrics": {
     "grounded_qa": {
       "answerable_coverage": {
-        "denominator": 4,
-        "numerator": 4,
+        "denominator": 7,
+        "numerator": 7,
         "value": 1.0
       },
       "appropriate_abstention_rate": {
         "denominator": 2,
-        "numerator": 1,
-        "value": 0.5
+        "numerator": 2,
+        "value": 1.0
       },
       "citation_correctness": {
-        "denominator": 4,
-        "numerator": 4,
+        "denominator": 7,
+        "numerator": 7,
         "value": 1.0
       },
       "citation_location_accuracy": {
-        "denominator": 4,
-        "numerator": 4,
+        "denominator": 7,
+        "numerator": 7,
         "value": 1.0
       },
       "citation_source_record_accuracy": {
-        "denominator": 4,
-        "numerator": 4,
+        "denominator": 7,
+        "numerator": 7,
         "value": 1.0
       },
       "evidence_support_rate": {
-        "denominator": 4,
-        "numerator": 4,
+        "denominator": 7,
+        "numerator": 7,
         "value": 1.0
       },
       "unsupported_answer_rate": {
         "denominator": 2,
-        "numerator": 1,
-        "value": 0.5
+        "numerator": 0,
+        "value": 0.0
       }
     },
     "personalization": {
@@ -297,17 +297,17 @@
     "uv run --python 3.13 python -m evaluation.runner"
   ],
   "sample_counts": {
-    "answerable_qa_cases": 4,
+    "answerable_qa_cases": 7,
     "documents": 5,
-    "qa_cases": 6,
+    "qa_cases": 9,
     "quiz_checks": 2,
     "simulated_learners": 2,
-    "source_records": 8,
+    "source_records": 9,
     "unanswerable_qa_cases": 2
   },
   "summary": {
-    "failed": 2,
-    "passed": 19,
+    "failed": 0,
+    "passed": 21,
     "total": 21
   }
 }

@@ -1,17 +1,17 @@
 # NEXUS ACADEMY Offline Evaluation
 
-- Dataset version: `1.0.0`
+- Dataset version: `1.1.0`
 - Mode: `offline_deterministic_synthetic_fixtures`
-- Checks passed: 19/21
+- Checks passed: 21/21
 
 ## Sample Counts
 
 | Sample | Count |
 |---|---:|
 | documents | 5 |
-| source records | 8 |
-| qa cases | 6 |
-| answerable qa cases | 4 |
+| source records | 9 |
+| qa cases | 9 |
+| answerable qa cases | 7 |
 | unanswerable qa cases | 2 |
 | quiz checks | 2 |
 | simulated learners | 2 |
@@ -22,13 +22,13 @@ All ratios include explicit numerators and denominators. A failed check records 
 
 | Metric | Value | Numerator / denominator |
 |---|---:|---:|
-| answerable coverage | 1.0000 | 4 / 4 |
-| citation source record accuracy | 1.0000 | 4 / 4 |
-| citation location accuracy | 1.0000 | 4 / 4 |
-| citation correctness | 1.0000 | 4 / 4 |
-| evidence support rate | 1.0000 | 4 / 4 |
-| appropriate abstention rate | 0.5000 | 1 / 2 |
-| unsupported answer rate | 0.5000 | 1 / 2 |
+| answerable coverage | 1.0000 | 7 / 7 |
+| citation source record accuracy | 1.0000 | 7 / 7 |
+| citation location accuracy | 1.0000 | 7 / 7 |
+| citation correctness | 1.0000 | 7 / 7 |
+| evidence support rate | 1.0000 | 7 / 7 |
+| appropriate abstention rate | 1.0000 | 2 / 2 |
+| unsupported answer rate | 0.0000 | 0 / 2 |
 
 ## Quiz
 
@@ -65,7 +65,7 @@ All ratios include explicit numerators and denominators. A failed check records 
 | citation_record_accuracy | PASS | 1.0 | 1.0 |
 | citation_location_accuracy | PASS | 1.0 | 1.0 |
 | fixture_evidence_support | PASS | 1.0 | 1.0 |
-| unanswerable_abstention | FAIL | 0.5 | 1.0 |
+| unanswerable_abstention | PASS | 1.0 | 1.0 |
 | quiz_source_references | PASS | 1.0 | 1.0 |
 | quiz_answer_keys | PASS | 1.0 | 1.0 |
 | quiz_duplicates | PASS | 0.0 | 0.0 |
@@ -81,7 +81,7 @@ All ratios include explicit numerators and denominators. A failed check records 
 | adaptive_exact_repeat_avoidance | PASS | 1.0 | 1.0 |
 | learner_isolation | PASS | 1.0 | 1.0 |
 | document_isolation | PASS | 1.0 | 1.0 |
-| no_unsupported_answers | FAIL | 0.5 | 0.0 |
+| no_unsupported_answers | PASS | 0.0 | 0.0 |
 
 ## Limitations
 

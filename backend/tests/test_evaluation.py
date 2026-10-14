@@ -125,6 +125,68 @@ def test_quiz_quality_checks_source_backed_unique_answer_and_filters() -> None:
     assert _question_quality(url_question, True, blocked)[0] is False
 
 
+def test_qa_metrics_multi_source_citations() -> None:
+    rec1 = StoredSourceRecord(
+        id="source-1",
+        document_id="doc-1",
+        source_type="page",
+        source_number=1,
+        extracted_text="An ammeter measures current.",
+    )
+    rec2 = StoredSourceRecord(
+        id="source-2",
+        document_id="doc-1",
+        source_type="page",
+        source_number=2,
+        extracted_text="A fuse melts above limit.",
+    )
+    records = {rec1.id: rec1, rec2.id: rec2}
+    case = {
+        "answerable": True,
+        "expected_sources": [
+            {"type": "pdf_page", "location": 1},
+            {"type": "pdf_page", "location": 2},
+        ],
+        "expected_answer_terms": ["ammeter", "fuse"],
+    }
+    response_partial = {
+        "abstained": False,
+        "answer": "An ammeter measures current and a fuse melts.",
+        "citations": [{
+            "source_record_id": "source-1",
+            "source_type": "pdf_page",
+            "page_or_slide_number": 1,
+        }],
+    }
+    res_partial = evaluate_qa_case(case, response_partial, records)
+    assert res_partial["evidence_supported"] is True
+    assert res_partial["citation_source_record_correct"] is False
+    assert res_partial["citation_location_correct"] is False
+    assert res_partial["citation_correct"] is False
+
+    response_both = {
+        "abstained": False,
+        "answer": "An ammeter measures current and a fuse melts.",
+        "citations": [
+            {
+                "source_record_id": "source-1",
+                "source_type": "pdf_page",
+                "page_or_slide_number": 1,
+            },
+            {
+                "source_record_id": "source-2",
+                "source_type": "pdf_page",
+                "page_or_slide_number": 2,
+            },
+        ],
+    }
+    res_both = evaluate_qa_case(case, response_both, records)
+    assert res_both["evidence_supported"] is True
+    assert res_both["citation_source_record_correct"] is True
+    assert res_both["citation_location_correct"] is True
+    assert res_both["citation_correct"] is True
+
+
 def test_dataset_validation_rejects_malformed_source_locations() -> None:
     malformed = {
         "dataset_version": "bad",
@@ -148,20 +210,79 @@ async def test_benchmark_runner_uses_temp_database_and_emits_metrics(
 
     report = await run_evaluation(dataset)
 
-    assert report["dataset_version"] == "1.0.0"
+    assert report["dataset_version"] == "1.1.0"
     assert report["sample_counts"]["qa_cases"] == len(dataset["qa_cases"])
-    assert report["metrics"]["grounded_qa"]["citation_location_accuracy"]["denominator"] == 4
+    assert report["metrics"]["grounded_qa"]["citation_location_accuracy"]["denominator"] == 7
     assert report["metrics"]["quiz"]["quality_rule_satisfaction_rate"]["denominator"] > 0
     assert report["metrics"]["personalization"]["weak_concept_prioritized"]["value"] == 1.0
     assert report["metrics"]["personalization"]["adaptive_exact_repeat_avoidance"]["value"] == 1.0
     assert report["metrics"]["personalization"]["retry_not_double_counted"]["value"] == 1.0
-    assert report["metrics"]["grounded_qa"]["unsupported_answer_rate"]["value"] == 0.5
-    assert not next(
+    assert report["metrics"]["grounded_qa"]["unsupported_answer_rate"]["value"] == 0.0
+    assert next(
         check for check in report["checks"] if check["name"] == "no_unsupported_answers"
     )["passed"]
     assert "Ammeter measures current" not in json.dumps(report)
     markdown = render_markdown(report)
     assert "## Sample Counts" in markdown
-    assert "| qa cases | 6 |" in markdown
+    assert "| qa cases | 9 |" in markdown
     assert "Ammeter measures current" not in markdown
     assert __import__("os").environ["NEXUS_DATABASE_PATH"] == original_database_path
+
+
+@pytest.mark.anyio
+async def test_educational_quality_and_adversarial_fixture_audit(
+    tmp_path: Path,
+) -> None:
+    from app.quiz import generate_quiz, validate_quiz_questions
+    from app.storage import save_document
+    from app.ingestion import ExtractedRecord
+
+    fixture_path = REPOSITORY_ROOT / "evaluation" / "fixtures" / "educational_quality_v1.json"
+    assert fixture_path.is_file()
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    db_path = tmp_path / "edu_audit.db"
+    for scenario in fixture["scenarios"]:
+        content_type = (
+            "application/pdf"
+            if scenario["format"] == "pdf"
+            else "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        )
+        source_type = "page" if scenario["format"] == "pdf" else "slide"
+        records = [
+            ExtractedRecord(
+                source_type=source_type,
+                source_number=r["location"],
+                extracted_text=r["text"],
+                metadata={},
+            )
+            for r in scenario["records"]
+        ]
+        doc_id = save_document(db_path, scenario["id"], content_type, records)
+        questions = generate_quiz(db_path, doc_id, 4)
+
+        expected = scenario["expected_properties"]
+        if "expected_questions" in expected:
+            assert len(questions) == expected["expected_questions"]
+        elif "min_questions" in expected:
+            assert len(questions) >= expected["min_questions"]
+
+        # Validate that all generated questions strictly pass source and distractor verification
+        validated = validate_quiz_questions(db_path, doc_id, questions, skip_invalid=False)
+        assert len(validated) == len(questions)
+
+        if expected.get("has_cause_effect_questions"):
+            assert any(
+                "explicitly explains the cause or effect of" in q.question_text
+                for q in questions
+            )
+        if expected.get("no_duplicate_questions"):
+            assert len({q.question_id for q in questions}) == len(questions)
+            assert len({q.question_text for q in questions}) == len(questions)
+        if expected.get("visual_provenance_preserved"):
+            assert any(
+                q.source_type == "pptx_slide"
+                and q.page_or_slide_number == expected["visual_slide_number"]
+                for q in questions
+            )
+

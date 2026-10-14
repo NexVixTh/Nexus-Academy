@@ -14,6 +14,7 @@ from app.model_routing import (  # noqa: E402
     ModelAuthenticationError,
     ModelCredentialsError,
     ModelDisabledError,
+    ModelInvalidRequestError,
     ModelMessage,
     ModelNetworkError,
     ModelOutputError,
@@ -44,15 +45,17 @@ def run_smoke(router: ModelRouter) -> int:
             "fallback_configured",
             "Disable tutor fallback before the smoke test so only the selected cloud model is called.",
             2,
+            tutor,
         )
     enabled_other_tasks = [
-        task for task in TASK_NAMES if task != "tutor" and configs[task].enabled
+        task for task in TASK_NAMES if task != "tutor" and configs.get(task) and configs[task].enabled
     ]
     if enabled_other_tasks:
         return _report(
             "other_tasks_enabled",
             "Disable all non-tutor model tasks before the smoke test.",
             2,
+            tutor,
         )
 
     started = time.perf_counter()
@@ -71,6 +74,8 @@ def run_smoke(router: ModelRouter) -> int:
         return _report("timeout", "Configured provider request timed out.", 6, tutor)
     except ModelNetworkError:
         return _report("network_error", "Could not connect to the configured provider.", 7, tutor)
+    except ModelInvalidRequestError:
+        return _report("invalid_model", "The configured model ID is invalid, decommissioned, or not supported by this provider.", 10, tutor)
     except ModelUnavailableError:
         return _report("provider_unavailable", "Provider returned an unavailable/server response.", 8, tutor)
     except ModelOutputError:

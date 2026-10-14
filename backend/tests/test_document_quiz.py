@@ -556,3 +556,109 @@ async def test_quiz_submission_survives_new_app_and_database_connections(
     assert response.status_code == 200
     assert response.json()["correct_count"] == 1
     assert response.json()["total_questions"] == 3
+
+
+@pytest.mark.anyio
+async def test_quiz_generates_question_from_persisted_visual_description(
+    database_path: Path,
+) -> None:
+    from app.storage import attach_visual_description_to_source_record
+
+    statements = [
+        "Photosynthesis takes place in chloroplasts.",
+        "Chlorophyll absorbs blue and red wavelengths.",
+        "Water molecules split during light reactions.",
+    ]
+    doc_id = save_test_document(database_path, [("slide", 4, "\n".join(statements))])
+
+    # Attach visual description to slide 4
+    visual_desc = "Schematic diagram depicting chloroplast stroma and thylakoid stacks."
+    attached = attach_visual_description_to_source_record(
+        database_path, doc_id, 4, visual_desc
+    )
+    assert attached is True
+
+    response = await request_quiz(doc_id, question_count=5)
+    assert response.status_code == 200
+    questions = response.json()["questions"]
+    assert len(questions) > 0
+
+    # Verify visual question exists and is properly structured
+    visual_q = next(
+        (q for q in questions if "visual content description" in q["question_text"].casefold()),
+        None,
+    )
+    assert visual_q is not None
+    assert visual_q["source_type"] == "pptx_slide"
+    assert visual_q["page_or_slide_number"] == 4
+    assert "[Visual Content on Slide 4]:" in visual_q["supporting_excerpt"]
+    assert "chloroplast" in visual_q["supporting_excerpt"].casefold()
+    assert visual_q["answer_key"] in {"A", "B", "C", "D"}
+
+    # Distractors must come from the slide source record and not duplicate the answer
+    option_texts = [opt["text"] for opt in visual_q["options"]]
+    assert len(set(option_texts)) == 4
+    correct_opt = next(opt for opt in visual_q["options"] if opt["option_id"] == visual_q["answer_key"])
+    assert correct_opt["text"] == visual_q["supporting_excerpt"]
+
+    # Verify quiz submission succeeds with feedback citing visual evidence
+    submit_res = await submit_quiz(
+        doc_id,
+        response.json()["quiz_id"],
+        [{"question_id": visual_q["question_id"], "selected_option_id": visual_q["answer_key"]}],
+    )
+    assert submit_res.status_code == 200
+    res_data = submit_res.json()
+    visual_result = next(r for r in res_data["results"] if r["question_id"] == visual_q["question_id"])
+    assert visual_result["is_correct"] is True
+    assert "[Visual Content on Slide 4]:" in visual_result["feedback"]
+
+
+@pytest.mark.anyio
+async def test_visual_descriptions_cannot_leak_across_documents_in_quiz(
+    database_path: Path,
+) -> None:
+    from app.storage import attach_visual_description_to_source_record
+
+    doc1 = save_test_document(database_path, [("slide", 1, " ".join(SUITABLE_STATEMENTS))])
+    doc2 = save_test_document(database_path, [("slide", 1, " ".join(SUITABLE_STATEMENTS))])
+
+    attach_visual_description_to_source_record(
+        database_path, doc1, 1, "Classified rocket engine diagram."
+    )
+
+    # Quiz for doc2 must not have rocket engine visual descriptions or options
+    response = await request_quiz(doc2, question_count=10)
+    assert response.status_code == 200
+    questions = response.json()["questions"]
+    all_options = [opt["text"] for q in questions for opt in q["options"]]
+    assert not any("rocket" in opt.casefold() for opt in all_options)
+    assert not any("rocket" in q["question_text"].casefold() for q in questions)
+
+
+@pytest.mark.anyio
+async def test_quiz_generation_with_disabled_vision_makes_zero_external_calls(
+    database_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import documents
+    from app.model_routing import ModelRouter, TaskModelConfig
+
+    calls = 0
+
+    def fail_handler(req: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={})
+
+    mock_router = ModelRouter(
+        {"vision": TaskModelConfig(task="vision", enabled=False, provider="disabled")},
+        transport=httpx.MockTransport(fail_handler),
+    )
+    monkeypatch.setattr(documents, "MODEL_ROUTER", mock_router)
+
+    doc_id = save_test_document(database_path, [("slide", 1, " ".join(SUITABLE_STATEMENTS))])
+    response = await request_quiz(doc_id, question_count=3)
+    assert response.status_code == 200
+    assert calls == 0
+    assert len(response.json()["questions"]) == 3

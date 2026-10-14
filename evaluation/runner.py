@@ -113,20 +113,38 @@ def validate_dataset(data: object) -> dict[str, Any]:
         if not isinstance(terms, list) or any(not isinstance(term, str) for term in terms):
             raise BenchmarkDatasetError("expected_answer_terms must be a list of strings.")
         expected_source = case.get("expected_source")
+        expected_sources = case.get("expected_sources")
         if case["answerable"]:
-            if not isinstance(expected_source, dict):
+            if expected_source is None and expected_sources is None:
                 raise BenchmarkDatasetError("Answerable cases need an expected source location.")
+            if expected_source is not None and expected_sources is not None:
+                raise BenchmarkDatasetError("QA case cannot specify both expected_source and expected_sources.")
+
+            sources_to_check: list[dict[str, Any]] = []
+            if expected_source is not None:
+                if not isinstance(expected_source, dict):
+                    raise BenchmarkDatasetError("expected_source must be an object.")
+                sources_to_check.append(expected_source)
+            elif expected_sources is not None:
+                if not isinstance(expected_sources, list) or not expected_sources:
+                    raise BenchmarkDatasetError("expected_sources must be a non-empty list of source objects.")
+                for src in expected_sources:
+                    if not isinstance(src, dict):
+                        raise BenchmarkDatasetError("Each item in expected_sources must be an object.")
+                    sources_to_check.append(src)
+
             expected_type = "pdf_page" if document["format"] == "pdf" else "pptx_slide"
-            if expected_source.get("type") != expected_type:
-                raise BenchmarkDatasetError("Expected source type does not match document format.")
-            if not any(
-                record["location"] == expected_source.get("location")
-                for record in document["records"]
-            ):
-                raise BenchmarkDatasetError("QA case references an absent source location.")
+            for src in sources_to_check:
+                if src.get("type") != expected_type:
+                    raise BenchmarkDatasetError("Expected source type does not match document format.")
+                if not any(
+                    record["location"] == src.get("location")
+                    for record in document["records"]
+                ):
+                    raise BenchmarkDatasetError("QA case references an absent source location.")
             if not terms:
                 raise BenchmarkDatasetError("Answerable cases need manually verified answer terms.")
-        elif expected_source is not None or terms:
+        elif expected_source is not None or expected_sources is not None or terms:
             raise BenchmarkDatasetError(
                 "Unanswerable cases cannot declare expected citations or answer terms."
             )
@@ -239,34 +257,50 @@ def evaluate_qa_case(
             "unsupported_answer": returned and not abstained,
         }
 
-    expected = case["expected_source"]
-    expected_internal_type = "page" if expected["type"] == "pdf_page" else "slide"
-    expected_record = next(
-        (
-            record
-            for record in records_by_id.values()
-            if record.source_type == expected_internal_type
-            and record.source_number == expected["location"]
-        ),
-        None,
-    )
-    citation_source_correct = any(
-        expected_record is not None
-        and citation.get("source_record_id") == expected_record.id
-        and citation.get("source_record_id") in records_by_id
-        for citation in citations
-    )
-    citation_location_correct = any(
-        citation.get("source_type") == expected["type"]
-        and citation.get("page_or_slide_number") == expected["location"]
-        for citation in citations
-    )
+    expected_sources: list[dict[str, Any]]
+    if "expected_sources" in case and case["expected_sources"] is not None:
+        expected_sources = case["expected_sources"]
+    elif "expected_source" in case and case["expected_source"] is not None:
+        expected_sources = [case["expected_source"]]
+    else:
+        expected_sources = []
+
+    all_source_records_correct = True
+    all_locations_correct = True
+
+    for expected in expected_sources:
+        expected_internal_type = "page" if expected["type"] == "pdf_page" else "slide"
+        expected_record = next(
+            (
+                record
+                for record in records_by_id.values()
+                if record.source_type == expected_internal_type
+                and record.source_number == expected["location"]
+            ),
+            None,
+        )
+        citation_source_correct = any(
+            expected_record is not None
+            and citation.get("source_record_id") == expected_record.id
+            and citation.get("source_record_id") in records_by_id
+            for citation in citations
+        )
+        citation_location_correct = any(
+            citation.get("source_type") == expected["type"]
+            and citation.get("page_or_slide_number") == expected["location"]
+            for citation in citations
+        )
+        if not citation_source_correct:
+            all_source_records_correct = False
+        if not citation_location_correct:
+            all_locations_correct = False
+
     evidence_supported = all(term.casefold() in answer for term in case["expected_answer_terms"])
     return {
         "answerable_covered": returned and not abstained,
-        "citation_source_record_correct": citation_source_correct,
-        "citation_location_correct": citation_location_correct,
-        "citation_correct": citation_source_correct and citation_location_correct,
+        "citation_source_record_correct": all_source_records_correct and bool(expected_sources),
+        "citation_location_correct": all_locations_correct and bool(expected_sources),
+        "citation_correct": all_source_records_correct and all_locations_correct and bool(expected_sources),
         "evidence_supported": evidence_supported,
         "unsupported_answer": False,
     }

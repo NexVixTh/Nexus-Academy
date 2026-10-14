@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Literal, Mapping, Sequence
 from uuid import NAMESPACE_URL, uuid5
 
+from app.concepts import (
+    _CAUSE_EFFECT_PATTERN,
+    _DEFINITION_VERB_PATTERN,
+    extract_concepts_from_records,
+)
 from app.storage import StoredSourceRecord, get_document_source_records
 
 
@@ -14,8 +19,13 @@ _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+|[\r\n]+")
 _WORD_PATTERN = re.compile(r"\w+", flags=re.UNICODE)
 _URL_ONLY_PATTERN = re.compile(r"^(?:https?://|www\.)\S+$", flags=re.IGNORECASE)
 _QUESTION_TERM_PATTERN = re.compile(
-    r'^Which source statement(?: on (?:page|slide) \d+)? '
-    r'explicitly mentions the term "([^\"]+)"\?$'
+    r'^Which (?:source statement|visual content description)(?: on (?:page|slide) \d+)? '
+    r'(?:explicitly mentions the term|explicitly defines or explains|explicitly explains the cause or effect of|explicitly illustrates) '
+    r'"([^\"]+)"\?$'
+)
+_VISUAL_CONTENT_MARKER_PATTERN = re.compile(
+    r"^\[Visual Content on Slide (\d+)\]:\s*(.*)$",
+    flags=re.IGNORECASE,
 )
 _GENERIC_HEADING_TERMS = {
     "algorithm", "analysis", "approach", "coding", "complexity", "conclusion",
@@ -29,7 +39,8 @@ _STOP_WORDS = {
     "between", "could", "does", "each", "from", "have", "into", "more", "most",
     "other", "over", "same", "should", "some", "such", "than", "that", "their",
     "there", "these", "they", "this", "those", "through", "under", "very", "which",
-    "while", "would",
+    "while", "would", "where", "what", "when", "with",
+    "high", "excess", "normal", "broken", "clean", "large", "small",
 }
 _OPTION_IDS = ("A", "B", "C", "D")
 _SOURCE_TYPE_LABELS: dict[str, Literal["pdf_page", "pptx_slide"]] = {
@@ -231,6 +242,9 @@ def _make_question(
     if len(distractors) < 3:
         return None
 
+    visual_match = _VISUAL_CONTENT_MARKER_PATTERN.match(correct_statement.strip())
+    is_visual = visual_match is not None
+
     correct_terms = set(_terms(correct_statement))
     candidate_terms = sorted(
         (
@@ -241,7 +255,17 @@ def _make_question(
         key=lambda term: (-len(term), term),
     )
 
-    for term in candidate_terms:
+    extracted_concepts = extract_concepts_from_records(record.document_id, [record])
+    concept_names = {c.name: c for c in extracted_concepts}
+    stmt_concepts = [c.name for c in extracted_concepts if c.description == correct_statement]
+
+    # Prioritize the concept term that this statement specifically defines/grounds
+    prioritized_terms = [t for t in candidate_terms if t in stmt_concepts]
+    other_concept_terms = [t for t in candidate_terms if t in concept_names and t not in stmt_concepts]
+    other_terms = [t for t in candidate_terms if t not in concept_names]
+    ordered_terms = prioritized_terms + other_concept_terms + other_terms
+
+    for term in ordered_terms:
         unrelated_distractors = [
             statement
             for statement in distractors
@@ -251,10 +275,33 @@ def _make_question(
             continue
 
         source_location = "page" if source_type == "pdf_page" else "slide"
-        question_text = (
-            f'Which source statement on {source_location} {record.source_number} '
-            f'explicitly mentions the term "{term}"?'
-        )
+        concept_info = concept_names.get(term)
+        clean_stmt = correct_statement.strip()
+
+        if is_visual:
+            question_text = (
+                f'Which visual content description on slide {record.source_number} '
+                f'explicitly illustrates "{term}"?'
+                if concept_info
+                else f'Which visual content description on slide {record.source_number} '
+                     f'explicitly mentions the term "{term}"?'
+            )
+        elif concept_info and _CAUSE_EFFECT_PATTERN.search(clean_stmt):
+            question_text = (
+                f'Which source statement on {source_location} {record.source_number} '
+                f'explicitly explains the cause or effect of "{term}"?'
+            )
+        elif concept_info and _DEFINITION_VERB_PATTERN.search(clean_stmt):
+            question_text = (
+                f'Which source statement on {source_location} {record.source_number} '
+                f'explicitly defines or explains "{term}"?'
+            )
+        else:
+            question_text = (
+                f'Which source statement on {source_location} {record.source_number} '
+                f'explicitly mentions the term "{term}"?'
+            )
+
         question_id = str(
             uuid5(
                 NAMESPACE_URL,
@@ -326,10 +373,15 @@ def _unique_statements(text: str) -> list[str]:
 
 
 def _is_substantive_statement(statement: str) -> bool:
-    if _URL_ONLY_PATTERN.fullmatch(statement.strip()):
+    cleaned = statement.strip()
+    if _URL_ONLY_PATTERN.fullmatch(cleaned):
+        return False
+    if "https://" in cleaned.casefold() or "http://" in cleaned.casefold():
         return False
 
-    terms = _terms(statement)
+    terms = _terms(cleaned)
+    if not terms:
+        return False
     if 1 <= len(terms) <= 3 and set(terms).issubset(_GENERIC_HEADING_TERMS):
         return False
     return True

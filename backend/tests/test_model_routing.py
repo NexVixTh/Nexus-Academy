@@ -16,6 +16,7 @@ from app.model_routing import (
     ModelCapabilityError,
     ModelCredentialsError,
     ModelDisabledError,
+    ModelInvalidRequestError,
     ModelMessage,
     ModelOutputError,
     ModelRateLimitError,
@@ -551,6 +552,81 @@ def test_smoke_distinguishes_invalid_key_without_printing_response_body(
     assert "mock-key" not in output
 
 
+def test_smoke_distinguishes_decommissioned_or_invalid_model(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "message": "The model `llama-3.3-70b-versatile` has been decommissioned.",
+                    "type": "invalid_request_error",
+                    "code": "model_decommissioned",
+                }
+            },
+        )
+
+    router = ModelRouter(
+        {
+            "tutor": TaskModelConfig(
+                task="tutor",
+                enabled=True,
+                provider="groq",
+                model="llama-3.3-70b-versatile",
+                api_key="mock-key",
+            )
+        },
+        transport=httpx.MockTransport(handler),
+        timeout_seconds=2.0,
+        max_retries=0,
+    )
+
+    assert run_smoke(router) == 10
+    output = capsys.readouterr().out
+    assert '"status": "invalid_model"' in output
+    assert "llama-3.3-70b-versatile" in output
+    assert "mock-key" not in output
+    assert "The model `llama-3.3-70b-versatile` has been decommissioned." not in output
+
+
+def test_smoke_distinguishes_model_not_found_404(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={
+                "error": {
+                    "message": "The model `invalid-id` does not exist.",
+                    "type": "invalid_request_error",
+                    "code": "model_not_found",
+                }
+            },
+        )
+
+    router = ModelRouter(
+        {
+            "tutor": TaskModelConfig(
+                task="tutor",
+                enabled=True,
+                provider="groq",
+                model="invalid-id",
+                api_key="mock-key",
+            )
+        },
+        transport=httpx.MockTransport(handler),
+        timeout_seconds=2.0,
+        max_retries=0,
+    )
+
+    assert run_smoke(router) == 10
+    output = capsys.readouterr().out
+    assert '"status": "invalid_model"' in output
+    assert "invalid-id" in output
+    assert "mock-key" not in output
+
+
 def test_routed_answerer_uses_deterministic_fallback_for_malformed_json() -> None:
     from app.retrieval import SearchMatch
 
@@ -686,3 +762,153 @@ def test_disabled_provider_does_not_fall_back_implicitly() -> None:
     )
     with pytest.raises(ModelDisabledError):
         router.complete("tutor", [ModelMessage("user", "test")])
+
+
+@pytest.mark.anyio
+async def test_mocked_llm_tutor_handles_timeouts_with_deterministic_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "timeout-fallback.sqlite3"
+    monkeypatch.setenv("NEXUS_DATABASE_PATH", str(database_path))
+    from app.storage import save_document
+
+    document_id = save_document(
+        database_path,
+        "synthetic.txt",
+        "text/plain",
+        [ExtractedRecord("page", 1, "The heart pumps blood through arteries.", {"is_empty": False, "text_length": 39})],
+    )
+
+    def timeout_handler(_: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("mocked read timeout")
+
+    config = TaskModelConfig(
+        task="tutor",
+        enabled=True,
+        provider="groq",
+        model="llama-3.3-70b-versatile",
+        api_key="mock-groq-key",
+    )
+    router = ModelRouter({"tutor": config}, transport=httpx.MockTransport(timeout_handler))
+    monkeypatch.setattr(documents, "ANSWERER", RoutedEvidenceAnswerer(router))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/documents/{document_id}/ask",
+            json={"question": "What does the heart do?"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["abstained"] is False
+    assert data["answer"].startswith("The document states:")
+    assert "heart pumps blood" in data["answer"]
+    assert len(data["citations"]) == 1
+    assert data["citations"][0]["page_or_slide_number"] == 1
+
+
+@pytest.mark.anyio
+async def test_mocked_llm_tutor_handles_rate_limits_and_empty_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "rate-limit-fallback.sqlite3"
+    monkeypatch.setenv("NEXUS_DATABASE_PATH", str(database_path))
+    from app.storage import save_document
+
+    document_id = save_document(
+        database_path,
+        "synthetic.txt",
+        "text/plain",
+        [ExtractedRecord("page", 1, "The lung exchanges oxygen and carbon dioxide.", {"is_empty": False, "text_length": 44})],
+    )
+
+    # 1. Test HTTP 429 rate limit
+    def rate_limit_handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": "Rate limit exceeded"})
+
+    config = TaskModelConfig(
+        task="tutor",
+        enabled=True,
+        provider="groq",
+        model="llama-3.3-70b-versatile",
+        api_key="mock-groq-key",
+    )
+    router = ModelRouter({"tutor": config}, transport=httpx.MockTransport(rate_limit_handler))
+    monkeypatch.setattr(documents, "ANSWERER", RoutedEvidenceAnswerer(router))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        res_429 = await client.post(
+            f"/documents/{document_id}/ask",
+            json={"question": "What do the lungs do?"},
+        )
+
+    assert res_429.status_code == 200
+    assert res_429.json()["answer"].startswith("The document states:")
+    assert "lung exchanges oxygen" in res_429.json()["answer"]
+
+    # 2. Test empty model content
+    def empty_handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": ""}}]})
+
+    empty_router = ModelRouter({"tutor": config}, transport=httpx.MockTransport(empty_handler))
+    monkeypatch.setattr(documents, "ANSWERER", RoutedEvidenceAnswerer(empty_router))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        res_empty = await client.post(
+            f"/documents/{document_id}/ask",
+            json={"question": "What do the lungs do?"},
+        )
+
+    assert res_empty.status_code == 200
+    assert res_empty.json()["answer"].startswith("The document states:")
+
+
+@pytest.mark.anyio
+async def test_mocked_llm_tutor_never_leaks_api_keys_in_responses_or_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "no-leak.sqlite3"
+    monkeypatch.setenv("NEXUS_DATABASE_PATH", str(database_path))
+    from app.storage import save_document
+
+    secret_key = "gsk_very_secret_mock_credential_key_12345"
+    document_id = save_document(
+        database_path,
+        "synthetic.txt",
+        "text/plain",
+        [ExtractedRecord("page", 1, "Neurons transmit electrical signals.", {"is_empty": False, "text_length": 36})],
+    )
+
+    def error_handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text=f"Internal crash with {secret_key}")
+
+    config = TaskModelConfig(
+        task="tutor",
+        enabled=True,
+        provider="groq",
+        model="llama-3.3-70b-versatile",
+        api_key=secret_key,
+    )
+    router = ModelRouter({"tutor": config}, transport=httpx.MockTransport(error_handler))
+    monkeypatch.setattr(documents, "ANSWERER", RoutedEvidenceAnswerer(router))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/documents/{document_id}/ask",
+            json={"question": "What do neurons transmit?"},
+        )
+
+    assert response.status_code == 200
+    assert secret_key not in response.text
+    assert "gsk_" not in response.text

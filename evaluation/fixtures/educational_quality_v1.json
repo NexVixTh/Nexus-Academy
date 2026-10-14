@@ -1,0 +1,171 @@
+{
+  "fixture_version": "1.0.0",
+  "description": "Controlled adversarial and educational quality test fixtures designed to audit reasoning requirements, distractor distinctness, causal claims, concept alignment, and adaptive practice behaviors.",
+  "scenarios": [
+    {
+      "id": "straightforward_definitions",
+      "description": "Straightforward scientific instrument definitions with distinct measurable quantities.",
+      "format": "pdf",
+      "records": [
+        {
+          "location": 1,
+          "text": "An ammeter measures electrical current in amperes.\nA voltmeter measures electrical potential difference in volts.\nAn ohmmeter measures electrical resistance across components.\nA wattmeter measures electrical power consumption over time."
+        },
+        {
+          "location": 2,
+          "text": "An ammeter measures total circuit current without causing a significant voltage drop.\nA voltmeter measures potential difference across components without drawing noticeable current.\nAn ohmmeter calculates resistance by applying a small voltage.\nA wattmeter measures real electrical power delivered to the circuit load."
+        }
+      ],
+      "expected_properties": {
+        "min_questions": 4,
+        "requires_reasoning_type": "definition_or_explanation",
+        "distractors_distinct": true,
+        "concept_matches_assessed": true
+      }
+    },
+    {
+      "id": "two_related_comparison",
+      "description": "Explicitly stated behavioral differences between related electrical materials.",
+      "format": "pdf",
+      "records": [
+        {
+          "location": 1,
+          "text": "Conductors allow electric charge to flow freely through wire materials.\nInsulators prevent electric charge movement under ordinary voltages.\nSemiconductors switch electrical conductivity depending on temperature.\nSuperconductors carry electrical current with zero resistance at low temperatures."
+        }
+      ],
+      "expected_properties": {
+        "min_questions": 4,
+        "distractors_distinct": true,
+        "concept_matches_assessed": true,
+        "no_unsupported_comparisons": true
+      }
+    },
+    {
+      "id": "explicit_causal",
+      "description": "Explicit physical cause and effect chain in electrical protection.",
+      "format": "pdf",
+      "records": [
+        {
+          "location": 1,
+          "text": "Excess current causes wires to heat up rapidly.\nHigh temperature melts the fuse wire, breaking the circuit.\nA broken circuit prevents electrical fire hazards in buildings.\nGrounding protects users by safely diverting stray fault currents."
+        }
+      ],
+      "expected_properties": {
+        "min_questions": 4,
+        "has_cause_effect_questions": true,
+        "no_unsupported_causal_claims": true,
+        "concept_matches_assessed": true
+      }
+    },
+    {
+      "id": "keyword_overlap_unrelated",
+      "description": "Identical keyword 'cell' used across distinct biological and electrochemical domains.",
+      "format": "pdf",
+      "records": [
+        {
+          "location": 1,
+          "text": "The cell membrane regulates transport of ions in biological cells.\nA battery cell produces electromotive force through chemical reactions.\nSolar cells convert photons into electrical energy via photovoltaic effect.\nFuel cells generate electricity using hydrogen and oxygen reactions."
+        }
+      ],
+      "expected_properties": {
+        "min_questions": 4,
+        "distractors_distinct": true,
+        "no_false_positive_cross_term_distractors": true
+      }
+    },
+    {
+      "id": "insufficient_evidence",
+      "description": "Fewer substantive statements than requested quiz length, requiring limitation reporting.",
+      "format": "pdf",
+      "records": [
+        {
+          "location": 1,
+          "text": "The sun radiates light.\nThe moon orbits Earth.\nStars shine in space."
+        }
+      ],
+      "expected_properties": {
+        "expected_questions": 0,
+        "reports_limitation": true,
+        "no_fabricated_distractors": true
+      }
+    },
+    {
+      "id": "repeated_definitions",
+      "description": "Repeated definitions of the same core concept across statements.",
+      "format": "pdf",
+      "records": [
+        {
+          "location": 1,
+          "text": "Photosynthesis converts solar light into chemical sugars.\nPhotosynthesis converts light into chemical energy in plant cells.\nChlorophyll absorbs red and blue light wavelengths in leaves.\nThylakoids contain chlorophyll for light reactions in chloroplasts."
+        }
+      ],
+      "expected_properties": {
+        "no_duplicate_questions": true,
+        "options_distinct": true
+      }
+    },
+    {
+      "id": "visual_description_uncertainty",
+      "description": "Visual diagram descriptions with specific slide attribution.",
+      "format": "pptx",
+      "records": [
+        {
+          "location": 5,
+          "text": "Resistors oppose current flow in series paths.\nCapacitors store potential energy in electrostatic fields.\nInductors resist changes in direct electric current.\n[Visual Content on Slide 5]: Block diagram depicting schematic symbols for resistors and capacitors."
+        }
+      ],
+      "expected_properties": {
+        "min_questions": 1,
+        "visual_provenance_preserved": true,
+        "visual_slide_number": 5
+      }
+    },
+    {
+      "id": "multistep_explanation",
+      "description": "A multi-step water treatment process explanation with sequential operational stages.",
+      "format": "pdf",
+      "records": [
+        {
+          "location": 1,
+          "text": "Filtration removes suspended solid particles from raw incoming water.\nCoagulation aggregates microscopic colloids into heavier settleable flocs.\nDisinfection neutralizes pathogenic bacteria using controlled sodium hypochlorite.\nFluoridation strengthens dental enamel across municipal distribution networks."
+        }
+      ],
+      "expected_properties": {
+        "min_questions": 4,
+        "requires_reasoning_type": "multistep_sequence",
+        "concept_matches_assessed": true,
+        "distractors_distinct": true
+      }
+    },
+    {
+      "id": "unsupported_query_scenario",
+      "description": "A scenario testing whether questions absent from the document trigger appropriate abstention without hallucinating citations.",
+      "format": "pdf",
+      "records": [
+        {
+          "location": 1,
+          "text": "Transformers convert alternating current voltages between transmission circuits.\nInverters convert direct current into alternating current for power grids.\nRectifiers convert alternating current into direct current for device batteries.\nConverters regulate voltage levels across electronic subsystems."
+        }
+      ],
+      "qa_cases": [
+        {
+          "id": "unsupported_boiling_point",
+          "question": "What is the boiling point of mercury in degrees Celsius?",
+          "answerable": false
+        },
+        {
+          "id": "supported_transformer_definition",
+          "question": "What do transformers convert?",
+          "answerable": true,
+          "expected_answer_terms": ["transformers", "voltages"]
+        }
+      ],
+      "expected_properties": {
+        "min_questions": 4,
+        "abstains_on_unsupported": true,
+        "concept_matches_assessed": true
+      }
+    }
+  ]
+}
+

@@ -145,8 +145,9 @@ class LearnerQuizOwnershipError(ValueError):
 
 
 _QUIZ_CONCEPT_PATTERN = re.compile(
-    r'^Which source statement(?: on (?:page|slide) \d+)? '
-    r'explicitly mentions the term "([^\"]+)"\?$'
+    r'^Which (?:source statement|visual content description)(?: on (?:page|slide) \d+)? '
+    r'(?:explicitly mentions the term|explicitly defines or explains|explicitly explains the cause or effect of|explicitly illustrates) '
+    r'"([^\"]+)"\?$'
 )
 
 
@@ -328,6 +329,74 @@ def get_document_asset(
         content_hash=row["content_hash"],
         byte_size=row["byte_size"],
     )
+
+def get_document_asset_bytes(
+    database_path: Path,
+    document_id: str,
+    asset_id: str,
+) -> tuple[bytes, str] | None:
+    if not database_path.is_file():
+        return None
+
+    with closing(sqlite3.connect(database_path)) as connection, connection:
+        connection.row_factory = sqlite3.Row
+        _ensure_asset_tables(connection)
+        row = connection.execute(
+            "SELECT a.mime_type, a.storage_key, a.content_hash "
+            "FROM document_assets da JOIN assets a ON a.asset_id = da.asset_id "
+            "WHERE da.document_id = ? AND da.asset_id = ?",
+            (document_id, asset_id),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    asset_root = get_asset_directory(database_path).resolve()
+    relative_key = Path(row["storage_key"])
+    if relative_key.is_absolute() or ".." in relative_key.parts:
+        return None
+    asset_path = (asset_root / relative_key).resolve()
+    if asset_root not in asset_path.parents or not asset_path.is_file():
+        return None
+
+    data = asset_path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != row["content_hash"]:
+        return None
+
+    return data, row["mime_type"]
+
+
+def attach_visual_description_to_source_record(
+    database_path: Path,
+    document_id: str,
+    slide_number: int,
+    description: str,
+) -> bool:
+    if not database_path.is_file() or not description.strip():
+        return False
+
+    visual_tag = f"\n[Visual Content on Slide {slide_number}]: {description.strip()}"
+
+    with closing(sqlite3.connect(database_path)) as connection, connection:
+        row = connection.execute(
+            "SELECT id, extracted_text FROM source_records "
+            "WHERE document_id = ? AND source_type = 'slide' AND source_number = ?",
+            (document_id, slide_number),
+        ).fetchone()
+        if row is None:
+            return False
+
+        record_id, existing_text = row
+        # Avoid duplicate visual descriptions
+        if visual_tag.strip() in existing_text:
+            return True
+
+        updated_text = (existing_text + visual_tag).strip()
+        connection.execute(
+            "UPDATE source_records SET extracted_text = ? WHERE id = ?",
+            (updated_text, record_id),
+        )
+        return True
 
 
 def save_quiz_session(

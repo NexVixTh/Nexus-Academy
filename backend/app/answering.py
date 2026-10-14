@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, Sequence
@@ -40,9 +41,38 @@ class Answerer(Protocol):
         """Produce an answer draft and identify the evidence records it uses."""
 
 
+_QUESTION_STOPWORDS = {
+    "a", "an", "the", "and", "or", "in", "on", "at", "to", "for", "with",
+    "by", "of", "from", "into", "through", "during", "before", "after",
+    "above", "below", "between", "under", "is", "are", "was", "were", "be",
+    "been", "being", "have", "has", "had", "do", "does", "did", "can",
+    "could", "shall", "should", "will", "would", "may", "might", "must",
+    "this", "that", "these", "those", "what", "which", "who", "whom",
+    "whose", "how", "when", "where", "why", "item", "named", "its", "it",
+}
+
+
+def _extract_question_keywords(text: str) -> list[str]:
+    words = re.findall(r"\w+", text, flags=re.UNICODE)
+    return [w.casefold() for w in words if len(w) >= 2 and w.casefold() not in _QUESTION_STOPWORDS]
+
+
+def _split_question_clauses(text: str) -> list[list[str]]:
+    raw_clauses = re.split(r"[,;]|\band\b", text, flags=re.IGNORECASE)
+    clauses = [_extract_question_keywords(clause) for clause in raw_clauses]
+    return [clause for clause in clauses if clause]
+
+
+def _match_term_in_words(term: str, words: set[str]) -> bool:
+    if term in words:
+        return True
+    if len(term) >= 4:
+        return any(len(w) >= 4 and (term in w or w in term) for w in words)
+    return False
+
+
 class QuotedEvidenceAnswerer:
     def answer(self, question: str, evidence: Sequence[SearchMatch]) -> AnswerDraft:
-        del question
         if not evidence:
             return AnswerDraft(
                 answer="I could not find supporting evidence in this document.",
@@ -50,6 +80,92 @@ class QuotedEvidenceAnswerer:
                 abstention_reason="No matching source records were retrieved.",
                 citation_record_ids=(),
             )
+
+        keywords = _extract_question_keywords(question)
+        if keywords:
+            # Check sentence-level co-occurrence and missing terms across all retrieved evidence
+            all_evidence_words: set[str] = set()
+            max_sentence_matches = 0
+            for match in evidence:
+                # Split excerpt into sentences by punctuation and line breaks
+                sentences = [s.strip() for s in re.split(r"[\n.!?]+", match.excerpt) if s.strip()]
+                for sentence in sentences:
+                    sentence_words = {
+                        w.casefold() for w in re.findall(r"\w+", sentence, flags=re.UNICODE)
+                    }
+                    all_evidence_words.update(sentence_words)
+                    sent_matches = sum(
+                        1 for term in keywords if _match_term_in_words(term, sentence_words)
+                    )
+                    if sent_matches > max_sentence_matches:
+                        max_sentence_matches = sent_matches
+
+            missing_terms = [
+                term for term in keywords if not _match_term_in_words(term, all_evidence_words)
+            ]
+
+            # Check for missing prepositional target complements (e.g. "into sound", "from soil")
+            question_tokens = [w.casefold() for w in re.findall(r"\w+", question, flags=re.UNICODE)]
+            has_unsupported_target_complement = False
+            for prep in ("into", "against", "towards"):
+                if prep in question_tokens:
+                    idx = question_tokens.index(prep)
+                    comp_terms = [t for t in question_tokens[idx + 1 :] if t not in _QUESTION_STOPWORDS]
+                    if comp_terms and all(not _match_term_in_words(t, all_evidence_words) for t in comp_terms):
+                        has_unsupported_target_complement = True
+                        break
+
+            # If a critical target complement or multiple key predicates are absent from retrieved evidence,
+            # and no single sentence connects the query terms, abstain.
+            if has_unsupported_target_complement and max_sentence_matches <= 2:
+                return AnswerDraft(
+                    answer="I could not find supporting evidence in this document.",
+                    abstained=True,
+                    abstention_reason=(
+                        "Retrieved passages contain keyword overlap but do not answer the question."
+                    ),
+                    citation_record_ids=(),
+                )
+
+        # Check if question requires combining multiple passages (multiple interrogative/distinct clauses)
+        clauses = _split_question_clauses(question)
+        if len(clauses) >= 2 and len(evidence) >= 2:
+            clause_matches: list[SearchMatch] = []
+            used_source_ids: set[str] = set()
+            for clause in clauses:
+                clause_set = set(clause)
+                best_match_for_clause: SearchMatch | None = None
+                best_cov = 0
+                for match in evidence:
+                    match_words = {
+                        w.casefold() for w in re.findall(r"\w+", match.excerpt, flags=re.UNICODE)
+                    }
+                    cov = sum(1 for term in clause_set if _match_term_in_words(term, match_words))
+                    if cov > best_cov:
+                        best_cov = cov
+                        best_match_for_clause = match
+                if (
+                    best_match_for_clause is not None
+                    and best_cov >= 2
+                    and best_match_for_clause.source_record_id not in used_source_ids
+                ):
+                    clause_matches.append(best_match_for_clause)
+                    used_source_ids.add(best_match_for_clause.source_record_id)
+
+            if len(clause_matches) >= 2:
+                # Combine excerpts deterministically in order of their page/slide number
+                clause_matches.sort(key=lambda m: (m.page_or_slide_number, m.source_record_id))
+                excerpts = [m.excerpt.strip() for m in clause_matches]
+                combined_answer = " Additionally, ".join(
+                    f'The document states: "{exc}"' if i == 0 else f'the document states: "{exc}"'
+                    for i, exc in enumerate(excerpts)
+                )
+                return AnswerDraft(
+                    answer=combined_answer,
+                    abstained=False,
+                    abstention_reason=None,
+                    citation_record_ids=tuple(m.source_record_id for m in clause_matches),
+                )
 
         best_match = evidence[0]
         excerpt = best_match.excerpt.strip()
